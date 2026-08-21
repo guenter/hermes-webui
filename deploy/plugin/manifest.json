@@ -1,0 +1,12 @@
+{
+  "name": "hermes-webui",
+  "label": "Hermes Web UI",
+  "description": "Responsive multi-profile web interface for Hermes Agent",
+  "icon": "MessageSquare",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/webui",
+    "position": "after:chat"
+  },
+  "entry": "loader.js"
+}

@@ -1,0 +1,9 @@
+name: hermes-webui
+version: 0.1.0
+description: "Responsive multi-profile web interface for Hermes Agent."
+author: "Local"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
