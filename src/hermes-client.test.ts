@@ -1,5 +1,30 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DashboardHermesClient, DemoHermesClient, normalizeSessionSource, normalizeTimestamp } from './hermes-client'
+
+class FakeSocket {
+  static instances: FakeSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSING = 2
+  static readonly CLOSED = 3
+  readyState = FakeSocket.CONNECTING
+  onopen: (() => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: ((event: { data: string }) => void) | null = null
+  sent: string[] = []
+  constructor(public url: string) { FakeSocket.instances.push(this) }
+  send(data: string) { this.sent.push(data) }
+  open() { this.readyState = FakeSocket.OPEN; this.onopen?.() }
+  close() { this.readyState = FakeSocket.CLOSED; this.onclose?.() }
+}
+
+function installFakeGateway() {
+  FakeSocket.instances = []
+  vi.stubGlobal('WebSocket', FakeSocket)
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ticket: 't' }), { status: 200 })))
+}
 
 describe('Hermes timestamps', () => {
   it('normalizes Unix seconds returned by the session API', () => {
@@ -71,6 +96,7 @@ describe('DashboardHermesClient session resume', () => {
 
     await client.interrupt('coder', 'stored-1')
     expect(calls.at(-1)).toEqual({ method: 'session.interrupt', params: { profile: 'coder', session_id: 'live-2' } })
+    client.dispose()
   })
 
   it('remaps a resumed session id back to the stored id in incoming gateway events', async () => {
@@ -90,5 +116,43 @@ describe('DashboardHermesClient session resume', () => {
     ;(client as unknown as ClientWithReceive).receive({ method: 'message.delta', params: { session_id: 'live-2', delta: 'hi' } })
 
     expect((events[0] as { params: { session_id: string } }).params.session_id).toBe('stored-1')
+    client.dispose()
+  })
+})
+
+describe('DashboardHermesClient reconnection', () => {
+  let client: DashboardHermesClient
+
+  afterEach(() => { client.dispose(); vi.unstubAllGlobals(); vi.useRealTimers() })
+
+  it('automatically reconnects after the socket closes unexpectedly', async () => {
+    installFakeGateway()
+    client = new DashboardHermesClient()
+
+    client.submit('coder', 'session-1', 'hello').catch(() => undefined)
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    FakeSocket.instances[0].open()
+
+    // Connection dies silently (e.g. laptop sleep) without any user action.
+    FakeSocket.instances[0].close()
+
+    await vi.waitFor(() => expect(FakeSocket.instances.length).toBeGreaterThan(1), { timeout: 20_000 })
+  }, 20_000)
+
+  it('forces a fresh connection when the tab becomes visible again', async () => {
+    installFakeGateway()
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: true, configurable: true })
+    client = new DashboardHermesClient()
+
+    client.submit('coder', 'session-1', 'hello').catch(() => undefined)
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    FakeSocket.instances[0].open()
+    expect(FakeSocket.instances[0].readyState).toBe(FakeSocket.OPEN)
+
+    // The socket is a zombie: readyState still reports OPEN even though it's dead.
+    // Waking the tab should not trust that and should force a reconnect.
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(FakeSocket.instances[0].readyState).toBe(FakeSocket.CLOSED)
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
   })
 })

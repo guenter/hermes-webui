@@ -65,6 +65,44 @@ export class DashboardHermesClient implements HermesClient {
   private connectPromise?: Promise<void>
   private liveSessionIds = new Map<string, string>()
   private storedSessionIds = new Map<string, string>()
+  private reconnectAttempts = 0
+  private reconnectTimer?: number
+
+  constructor() {
+    // A socket can go silently dead (laptop sleep, NAT/proxy idle timeout) without
+    // ever firing close/error — readyState keeps reporting OPEN for a long time, so
+    // a request made against it just vanishes. Re-verify the connection whenever the
+    // tab wakes back up instead of trusting a stale readyState.
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.handleWake)
+    if (typeof window !== 'undefined') window.addEventListener('online', this.handleWake)
+  }
+
+  private handleWake = () => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.close()
+    this.ensureConnected()
+  }
+
+  private ensureConnected() {
+    this.connect().catch(() => this.scheduleReconnect())
+  }
+
+  dispose() {
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.handleWake)
+    if (typeof window !== 'undefined') window.removeEventListener('online', this.handleWake)
+    if (this.reconnectTimer != null) { window.clearTimeout(this.reconnectTimer); this.reconnectTimer = undefined }
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer != null) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 15_000)
+    this.reconnectAttempts += 1
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = undefined
+      this.ensureConnected()
+    }, delay)
+  }
 
   async listProfiles(): Promise<HermesProfile[]> {
     const response = await hermesFetch('/api/profiles')
@@ -162,9 +200,13 @@ export class DashboardHermesClient implements HermesClient {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(`${protocol}//${location.host}${path}`)
         this.ws = ws
-        ws.onopen = () => resolve()
+        ws.onopen = () => { this.reconnectAttempts = 0; resolve() }
         ws.onerror = () => reject(new Error('Unable to connect to Hermes Gateway'))
-        ws.onclose = () => { this.connectPromise = undefined; this.rejectPending(new Error('Hermes connection closed')) }
+        ws.onclose = () => {
+          this.connectPromise = undefined
+          this.rejectPending(new Error('Hermes connection closed'))
+          this.scheduleReconnect()
+        }
         ws.onmessage = (event) => this.receive(JSON.parse(String(event.data)) as RpcResponse)
       })
     })()
