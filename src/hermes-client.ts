@@ -144,13 +144,13 @@ export class DashboardHermesClient implements HermesClient {
   }
 
   submit(profile: string, conversationId: string, text: string) {
-    return this.withSessionResume(profile, conversationId, (sessionId) => this.request('prompt.submit', { profile, session_id: sessionId, prompt: text, text })).then(() => undefined)
+    return this.withSessionResume(profile, conversationId, (sessionId) => this.request('prompt.submit', { profile, session_id: sessionId, text })).then(() => undefined)
   }
   interrupt(profile: string, conversationId: string) {
     return this.withSessionResume(profile, conversationId, (sessionId) => this.request('session.interrupt', { profile, session_id: sessionId })).then(() => undefined)
   }
   steer(profile: string, conversationId: string, text: string) {
-    return this.withSessionResume(profile, conversationId, (sessionId) => this.request('session.steer', { profile, session_id: sessionId, prompt: text, text })).then(() => undefined)
+    return this.withSessionResume(profile, conversationId, (sessionId) => this.request('session.steer', { profile, session_id: sessionId, text })).then(() => undefined)
   }
   respond(profile: string, conversationId: string, request: InteractiveRequest, value: string) {
     return this.withSessionResume(profile, conversationId, (sessionId) => {
