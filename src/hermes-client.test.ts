@@ -155,4 +155,40 @@ describe('DashboardHermesClient reconnection', () => {
     expect(FakeSocket.instances[0].readyState).toBe(FakeSocket.CLOSED)
     await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
   })
+
+  it('ignores a superseded socket\'s belated close event instead of tearing down the new connection', async () => {
+    // Real browsers close a socket asynchronously: readyState flips to CLOSING
+    // immediately but onclose fires later. installFakeGateway's FakeSocket closes
+    // synchronously and can't exercise that race, so this test uses its own.
+    class AsyncCloseSocket extends FakeSocket {
+      close() {
+        this.readyState = FakeSocket.CLOSING
+        setTimeout(() => { this.readyState = FakeSocket.CLOSED; this.onclose?.() }, 10)
+      }
+    }
+    FakeSocket.instances = []
+    vi.stubGlobal('WebSocket', AsyncCloseSocket)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ticket: 't' }), { status: 200 })))
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: true, configurable: true })
+    client = new DashboardHermesClient()
+
+    client.submit('coder', 'session-1', 'hello').catch(() => undefined)
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    FakeSocket.instances[0].open()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // Wake forces socket A to close and immediately opens socket B in its place.
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2))
+
+    // A request goes out against B while it's still connecting.
+    client.interrupt('coder', 'session-1').catch(() => undefined)
+    FakeSocket.instances[1].open()
+
+    // A's belated onclose fires after B has already taken over.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // It must not have reset connectPromise/pending state or spawned a third socket.
+    expect(FakeSocket.instances).toHaveLength(2)
+  })
 })

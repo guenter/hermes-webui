@@ -200,14 +200,28 @@ export class DashboardHermesClient implements HermesClient {
       await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(`${protocol}//${location.host}${path}`)
         this.ws = ws
-        ws.onopen = () => { this.reconnectAttempts = 0; resolve() }
-        ws.onerror = () => reject(new Error('Unable to connect to Hermes Gateway'))
+        // Forcing a fresh connection (handleWake) leaves the old socket's close/error
+        // still pending. Ignore events from any socket that isn't the current one so a
+        // superseded socket can't clobber connectPromise or reject the new socket's requests.
+        ws.onopen = () => {
+          if (this.ws !== ws) return
+          this.reconnectAttempts = 0
+          resolve()
+        }
+        ws.onerror = () => {
+          if (this.ws !== ws) return
+          reject(new Error('Unable to connect to Hermes Gateway'))
+        }
         ws.onclose = () => {
+          if (this.ws !== ws) return
           this.connectPromise = undefined
           this.rejectPending(new Error('Hermes connection closed'))
           this.scheduleReconnect()
         }
-        ws.onmessage = (event) => this.receive(JSON.parse(String(event.data)) as RpcResponse)
+        ws.onmessage = (event) => {
+          if (this.ws !== ws) return
+          this.receive(JSON.parse(String(event.data)) as RpcResponse)
+        }
       })
     })()
     try { await this.connectPromise } finally { this.connectPromise = undefined }
